@@ -24,7 +24,7 @@ static unsigned int num_zero_closers;
 static unsigned int num_file_creaters;
 static unsigned int num_inotify_instances;
 
-#define TMP_DIR_NAME "/tmp/inotify_syscall_thrash"
+static char *working_dir = "/tmp/inotify_syscall_thrash";
 
 struct watcher_struct {
 	int inotify_fd;
@@ -75,7 +75,7 @@ static void *create_files(__attribute__ ((unused)) void *ptr)
 		for (i = 0; i < num_watcher_threads; i++) {
 			int fd;
 
-			snprintf(filename, 50, "%s/%d", TMP_DIR_NAME, i);
+			snprintf(filename, 50, "%s/%d", working_dir, i);
 			unlink(filename);
 			fd = open(filename, O_RDWR|O_CREAT, S_IRUSR|S_IWUSR);
 			if (fd >= 0)
@@ -86,7 +86,7 @@ static void *create_files(__attribute__ ((unused)) void *ptr)
 
 	/* cleanup all files on exit */
 	for (i = 0; i < num_watcher_threads; i++) {
-		snprintf(filename, 50, "%s/%d", TMP_DIR_NAME, i);
+		snprintf(filename, 50, "%s/%d", working_dir, i);
 		unlink(filename);
 	}
 
@@ -137,7 +137,7 @@ static void *add_watches(void *ptr)
 	fprintf(stderr, "Creating an watch adder thread, notify_fd=%d filenum=%d\n",
 		notify_fd, file_num);
 
-	snprintf(filename, 50, "%s/%d", TMP_DIR_NAME, file_num);
+	snprintf(filename, 50, "%s/%d", working_dir, file_num);
 
 	while (!stopped) {
 		ret = inotify_add_watch(notify_fd, filename, IN_ALL_EVENTS);
@@ -189,10 +189,10 @@ static void *mount_tmpdir(__attribute__ ((unused)) void *ptr)
 	int rc;
 
 	while (!stopped) {
-		rc = mount(TMP_DIR_NAME, TMP_DIR_NAME, "tmpfs", MS_MGC_VAL, "rootcontext=\"unconfined_u:object_r:tmp_t:s0\"");
+		rc = mount(working_dir, working_dir, "tmpfs", MS_MGC_VAL, "rootcontext=\"unconfined_u:object_r:tmp_t:s0\"");
 		usleep(100000);
 		if (!rc)
-			umount2(TMP_DIR_NAME, MNT_DETACH);
+			umount2(working_dir, MNT_DETACH);
 		usleep(100000);
 	}
 	return NULL;
@@ -247,10 +247,11 @@ static int process_args(int argc, char *argv[])
 		    {"zero",	required_argument,	0, 'z'},
 		    {"creaters", required_argument,	0, 'r'},
 		    {"instances", required_argument,	0, 'i'},
+		    {"dir", required_argument,		0, 't'},
 		    {0,		0,			0,  0 }
 		};
 
-		c = getopt_long(argc, argv, "c:d:m:z:r:i:", long_options, &option_index);
+		c = getopt_long(argc, argv, "c:d:m:z:r:i:t:", long_options, &option_index);
 		if (c == -1)
 			break;
 
@@ -272,6 +273,9 @@ static int process_args(int argc, char *argv[])
 			break;
 		case 'i':
 			str_to_uint(&num_cores, optarg);
+			break;
+		case 't':
+			working_dir = optarg;
 			break;
 		default:
 			printf("?? unknown option 0%o ??\n", c);
@@ -347,7 +351,7 @@ int main(int argc, char *argv[])
 	}
 
 	/* make sure the directory exists */
-	mkdir(TMP_DIR_NAME, S_IRWXU);
+	mkdir(working_dir, S_IRWXU);
 
 	/* set up a pthread attr with a tiny stack */
 	iret = pthread_attr_init(&attr);
@@ -473,7 +477,7 @@ int main(int argc, char *argv[])
 			pthread_join(data_dumpers[i * num_data_dumpers + j], &ret);
 
 	/* clean up the tmp dir which should be empty */
-	rmdir(TMP_DIR_NAME);
+	rmdir(working_dir);
 
 	exit(0);
 }
