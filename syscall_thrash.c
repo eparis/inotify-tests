@@ -14,14 +14,14 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define NUM_CORES		2
-#define NUM_DATA_DUMPERS	4
-#define WATCHER_MULTIPLIER	4
-#define NUM_WATCHER_THREADS 	NUM_CORES
-#define NUM_CLOSER_THREADS	NUM_WATCHER_THREADS * 2
-#define NUM_ZERO_CLOSERS	1
-#define NUM_FILE_CREATERS	2
-#define NUM_INOTIFY_INSTANCES	2
+static unsigned int num_cores;
+static unsigned int num_data_dumpers;
+static unsigned int watcher_multiplier;
+static unsigned int num_watcher_threads;
+static unsigned int num_closer_threads;
+static unsigned int num_zero_closers;
+static unsigned int num_file_creaters;
+static unsigned int num_inotify_instances;
 
 #define TMP_DIR_NAME "/tmp/inotify_syscall_thrash"
 
@@ -66,12 +66,12 @@ static void sigfunc(int sig_num)
 static void *create_files(__attribute__ ((unused)) void *ptr)
 {
 	char filename[50];
-	int i;
+	unsigned int i;
 
 	fprintf(stderr, "Starting creator thread\n");
 
 	while (!stopped) {
-		for (i = 0; i < NUM_WATCHER_THREADS; i++) {
+		for (i = 0; i < num_watcher_threads; i++) {
 			int fd;
 
 			snprintf(filename, 50, "%s/%d", TMP_DIR_NAME, i);
@@ -84,7 +84,7 @@ static void *create_files(__attribute__ ((unused)) void *ptr)
 	}
 
 	/* cleanup all files on exit */
-	for (i = 0; i < NUM_WATCHER_THREADS; i++) {
+	for (i = 0; i < num_watcher_threads; i++) {
 		snprintf(filename, 50, "%s/%d", TMP_DIR_NAME, i);
 		unlink(filename);
 	}
@@ -199,7 +199,7 @@ static void *mount_tmpdir(__attribute__ ((unused)) void *ptr)
 
 int main(void)
 {
-	int inotify_fd[NUM_INOTIFY_INSTANCES];
+	int *inotify_fd;
 	struct watcher_struct *watcher_arg;
 	struct operator_struct *operator_arg;
 	pthread_t *watchers;
@@ -212,8 +212,21 @@ int main(void)
 	pthread_attr_t attr;
 	int iret;
 	void *ret;
-	int i, j, k;
+	unsigned int i, j, k;
 	struct sigaction setmask;
+
+	num_cores = 2;
+	num_data_dumpers = 4;
+	watcher_multiplier = 4;
+	num_watcher_threads = num_cores;
+	num_closer_threads = num_watcher_threads * 2;
+	num_zero_closers = 1;
+	num_file_creaters = 2;
+	num_inotify_instances = 2;
+
+	inotify_fd = calloc(num_inotify_instances, sizeof(*inotify_fd));
+	if (!inotify_fd)
+		exit(EXIT_FAILURE);
 
 	/* close cleanly on cntl+c */
 	sigemptyset( &setmask.sa_mask );
@@ -222,7 +235,7 @@ int main(void)
 	sigaction( SIGINT,  &setmask, (struct sigaction *) NULL );
 
 	/* create and inotify instance an make it O_NONBLOCK */
-	for (i = 0; i < NUM_INOTIFY_INSTANCES; i++) {
+	for (i = 0; i < num_inotify_instances; i++) {
 		int fd  = inotify_init();
 		if (fd < 0)
 			handle_error("opening inotify_fd");
@@ -244,32 +257,32 @@ int main(void)
 		handle_error("pthread_attr_setstacksize");
 
 	/* watchers need to know what file to pay with, so we need and argument */
-	watcher_arg = calloc(NUM_INOTIFY_INSTANCES * NUM_WATCHER_THREADS, sizeof(struct watcher_struct));
+	watcher_arg = calloc(num_inotify_instances * num_watcher_threads, sizeof(struct watcher_struct));
 	if (!watcher_arg)
 		handle_error("allocating watcher_arg");
 
-	operator_arg = calloc(NUM_INOTIFY_INSTANCES, sizeof(struct operator_struct));
+	operator_arg = calloc(num_inotify_instances, sizeof(struct operator_struct));
 	if (!operator_arg)
 		handle_error("allocating operator_arg");
 
 	/* allocate the pthread_t's for all of the threads */
-	watchers = calloc(NUM_INOTIFY_INSTANCES * NUM_WATCHER_THREADS * WATCHER_MULTIPLIER, sizeof(pthread_t));
+	watchers = calloc(num_inotify_instances * num_watcher_threads * watcher_multiplier, sizeof(pthread_t));
 	if (!watchers)
 		handle_error("allocating watchers");
 
-	closers = calloc(NUM_INOTIFY_INSTANCES * NUM_CLOSER_THREADS, sizeof(pthread_t));
+	closers = calloc(num_inotify_instances * num_closer_threads, sizeof(pthread_t));
 	if (!closers)
 		handle_error("allocating closers");
 
-	zero_closers = calloc(NUM_INOTIFY_INSTANCES * NUM_ZERO_CLOSERS, sizeof(pthread_t));
+	zero_closers = calloc(num_inotify_instances * num_zero_closers, sizeof(pthread_t));
 	if (!zero_closers)
 		handle_error("allocating zero_closers");
 
-	data_dumpers = calloc(NUM_INOTIFY_INSTANCES * NUM_DATA_DUMPERS, sizeof(pthread_t));
+	data_dumpers = calloc(num_inotify_instances * num_data_dumpers, sizeof(pthread_t));
 	if (!data_dumpers)
 		handle_error("allocating data_dumpers");
 
-	file_creaters = calloc(NUM_FILE_CREATERS, sizeof(*file_creaters));
+	file_creaters = calloc(num_file_creaters, sizeof(*file_creaters));
 	if (!file_creaters)
 		handle_error("allocating file_creaters");
 
@@ -282,53 +295,53 @@ int main(void)
 	if (iret)
 		handle_error("low_wd_reseter");
 
-	/* create WATCHER_MULTIPLIER threads per file which do nothing
+	/* create watcher_multiplier threads per file which do nothing
 	 * but try to add a watch for each INOTIFY_INSTANCE */
-	for (i = 0; i < NUM_INOTIFY_INSTANCES; i++) {
-		for (j = 0; j < NUM_WATCHER_THREADS; j++) {
-			watcher_arg[i * NUM_WATCHER_THREADS + j].file_num = j;
-			watcher_arg[i * NUM_WATCHER_THREADS + j].inotify_fd = inotify_fd[i];
-			for (k = 0; k < WATCHER_MULTIPLIER; k++) {
-				iret = pthread_create(&watchers[i * (NUM_WATCHER_THREADS * WATCHER_MULTIPLIER) +
-								(j * WATCHER_MULTIPLIER) + k],
-						      &attr, add_watches, &watcher_arg[i * NUM_WATCHER_THREADS + j]);
+	for (i = 0; i < num_inotify_instances; i++) {
+		for (j = 0; j < num_watcher_threads; j++) {
+			watcher_arg[i * num_watcher_threads + j].file_num = j;
+			watcher_arg[i * num_watcher_threads + j].inotify_fd = inotify_fd[i];
+			for (k = 0; k < watcher_multiplier; k++) {
+				iret = pthread_create(&watchers[i * (num_watcher_threads * watcher_multiplier) +
+								(j * watcher_multiplier) + k],
+						      &attr, add_watches, &watcher_arg[i * num_watcher_threads + j]);
 				if (iret)
 					handle_error("creating water threads");
 			}
 		}
 	}
 
-	for (i = 0; i < NUM_INOTIFY_INSTANCES; i++)
+	for (i = 0; i < num_inotify_instances; i++)
 		operator_arg[i].inotify_fd = inotify_fd[i];
 
 	/* create threads which unlink and then recreate all of the files in question */
-	for (i = 0; i < NUM_FILE_CREATERS; i++) {
+	for (i = 0; i < num_file_creaters; i++) {
 		iret = pthread_create( &file_creaters[i], &attr, create_files, NULL);
 		if (iret)
 			handle_error("creating the file creators");
 	}
 
 	/* create threads which walk from low_wd to high_wd closing all of the wd's in between */
-	for (i = 0; i < NUM_INOTIFY_INSTANCES; i++)
-		for (j = 0; j < NUM_CLOSER_THREADS; j++) {
-			iret = pthread_create ( &closers[i * NUM_CLOSER_THREADS + j], &attr, close_watches, &operator_arg[i]);
+	for (i = 0; i < num_inotify_instances; i++)
+		for (j = 0; j < num_closer_threads; j++) {
+			iret = pthread_create ( &closers[i * num_closer_threads + j], &attr, close_watches, &operator_arg[i]);
 			if (iret)
 				handle_error("creating the close threads");
 		}
 
 	/* create threads which just walk from low_wd to low_wd +3 closing wd's for extra races */
-	for (i = 0; i < NUM_INOTIFY_INSTANCES; i++)
-		for (j = 0; j < NUM_ZERO_CLOSERS; j++) {
-			iret = pthread_create ( &zero_closers[i * NUM_ZERO_CLOSERS + j], &attr, zero_close_watches, &operator_arg[i]);
+	for (i = 0; i < num_inotify_instances; i++)
+		for (j = 0; j < num_zero_closers; j++) {
+			iret = pthread_create ( &zero_closers[i * num_zero_closers + j], &attr, zero_close_watches, &operator_arg[i]);
 			if (iret)
 				handle_error("creating the low closer threads");
 		}
 
 	/* create threads which just pull data off of the inotify fd.
 	 * use default ATTR for larger stack */
-	for (i = 0; i < NUM_INOTIFY_INSTANCES; i++)
-		for (j = 0; j < NUM_DATA_DUMPERS; j++) {
-			iret = pthread_create( &data_dumpers[i * NUM_DATA_DUMPERS + j], NULL, dump_data, &operator_arg[i]);
+	for (i = 0; i < num_inotify_instances; i++)
+		for (j = 0; j < num_data_dumpers; j++) {
+			iret = pthread_create( &data_dumpers[i * num_data_dumpers + j], NULL, dump_data, &operator_arg[i]);
 			if (iret)
 				handle_error("creating threads to dump inotify data");
 		}
@@ -337,26 +350,26 @@ int main(void)
 	/* Wait till threads are complete before main continues. */
 	pthread_join(low_wd_reseter, &ret);
 
-	for (i = 0; i < NUM_INOTIFY_INSTANCES; i++)
-		for (j = 0; j < NUM_WATCHER_THREADS; j++)
-			for (k = 0; k < WATCHER_MULTIPLIER; k++)
-				pthread_join(watchers[i * (NUM_WATCHER_THREADS * WATCHER_MULTIPLIER) +
-						      (j * WATCHER_MULTIPLIER) + k], &ret);
+	for (i = 0; i < num_inotify_instances; i++)
+		for (j = 0; j < num_watcher_threads; j++)
+			for (k = 0; k < watcher_multiplier; k++)
+				pthread_join(watchers[i * (num_watcher_threads * watcher_multiplier) +
+						      (j * watcher_multiplier) + k], &ret);
 
-	for (i = 0; i < NUM_FILE_CREATERS; i++)
+	for (i = 0; i < num_file_creaters; i++)
 		pthread_join(file_creaters[i], &ret);
 
-	for (i = 0; i < NUM_INOTIFY_INSTANCES; i++)
-		for (j = 0; j < NUM_CLOSER_THREADS; j++)
-			pthread_join(closers[i * NUM_CLOSER_THREADS + j], &ret);
+	for (i = 0; i < num_inotify_instances; i++)
+		for (j = 0; j < num_closer_threads; j++)
+			pthread_join(closers[i * num_closer_threads + j], &ret);
 
-	for (i = 0; i < NUM_INOTIFY_INSTANCES; i++)
-		for (j = 0; j < NUM_ZERO_CLOSERS; j++)
-			pthread_join(zero_closers[i * NUM_ZERO_CLOSERS + j], &ret);
+	for (i = 0; i < num_inotify_instances; i++)
+		for (j = 0; j < num_zero_closers; j++)
+			pthread_join(zero_closers[i * num_zero_closers + j], &ret);
 
-	for (i = 0; i < NUM_INOTIFY_INSTANCES; i++)
-		for (j = 0; j < NUM_DATA_DUMPERS; j++)
-			pthread_join(data_dumpers[i * NUM_DATA_DUMPERS + j], &ret);
+	for (i = 0; i < num_inotify_instances; i++)
+		for (j = 0; j < num_data_dumpers; j++)
+			pthread_join(data_dumpers[i * num_data_dumpers + j], &ret);
 
 	/* clean up the tmp dir which should be empty */
 	rmdir(TMP_DIR_NAME);
