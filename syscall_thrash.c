@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <getopt.h>
 #include <limits.h>
 #include <pthread.h>
 #include <sched.h>
@@ -197,7 +198,103 @@ static void *mount_tmpdir(__attribute__ ((unused)) void *ptr)
 	return NULL;
 }
 
-int main(void)
+static int str_to_uint(unsigned int *out, char *in)
+{
+	long val;
+	char *endptr;
+
+	errno = 0;    /* To distinguish success/failure after call */
+	val = strtol(in, &endptr, 10);
+
+	/* Check for various possible errors */
+	if ((errno == ERANGE && (val == LONG_MAX || val == LONG_MIN)) || (errno != 0 && val == 0)) {
+		perror("strtol");
+		return -1;
+	}
+
+	if (endptr == in) {
+		fprintf(stderr, "No digits were found\n");
+		return -1;
+	}
+
+	if (*endptr != '\0') { /* random shit after the number? */
+		printf("Further characters after number: %s\n", endptr);
+		return -1;
+	}
+
+	*out = val;
+
+	return 0;
+}
+
+static int process_args(int argc, char *argv[])
+{
+	int c;
+
+	num_cores = 2;
+	num_data_dumpers = 4;
+	watcher_multiplier = 4;
+	num_zero_closers = 1;
+	num_file_creaters = 2;
+	num_inotify_instances = 2;
+
+	while (1) {
+		int option_index = 0;
+		static struct option long_options[] = {
+		    {"cores",	required_argument,	0, 'c'},
+		    {"data",	required_argument,	0, 'd'},
+		    {"multiplier", required_argument,	0, 'm'},
+		    {"zero",	required_argument,	0, 'z'},
+		    {"creaters", required_argument,	0, 'r'},
+		    {"instances", required_argument,	0, 'i'},
+		    {0,		0,			0,  0 }
+		};
+
+		c = getopt_long(argc, argv, "c:d:m:z:r:i:", long_options, &option_index);
+		if (c == -1)
+			break;
+
+		switch (c) {
+		case 'c':
+			str_to_uint(&num_cores, optarg);
+			break;
+		case 'd':
+			str_to_uint(&num_cores, optarg);
+			break;
+		case 'm':
+			str_to_uint(&num_cores, optarg);
+			break;
+		case 'z':
+			str_to_uint(&num_cores, optarg);
+			break;
+		case 'r':
+			str_to_uint(&num_cores, optarg);
+			break;
+		case 'i':
+			str_to_uint(&num_cores, optarg);
+			break;
+		default:
+			printf("?? unknown option 0%o ??\n", c);
+			return -1;
+		}
+	}
+
+	if (optind < argc) {
+		printf("non-option ARGV-elements: ");
+		while (optind < argc)
+			printf("%s ", argv[optind++]);
+		printf("\n");
+	}
+
+	if (num_watcher_threads == 0)
+		num_watcher_threads = num_cores;
+	if (num_closer_threads == 0)
+		num_closer_threads = num_watcher_threads * 2;
+
+	return 0;
+}
+
+int main(int argc, char *argv[])
 {
 	int *inotify_fd;
 	struct watcher_struct *watcher_arg;
@@ -223,6 +320,10 @@ int main(void)
 	num_zero_closers = 1;
 	num_file_creaters = 2;
 	num_inotify_instances = 2;
+
+	iret = process_args(argc, argv);
+	if (iret)
+		exit(EXIT_FAILURE);
 
 	inotify_fd = calloc(num_inotify_instances, sizeof(*inotify_fd));
 	if (!inotify_fd)
