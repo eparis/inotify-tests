@@ -25,6 +25,8 @@ static unsigned int num_file_creaters;
 static unsigned int num_inotify_instances;
 
 static char *working_dir = "/tmp/inotify_syscall_thrash";
+static char *mnt_src;
+static char *fstype = "tmpfs";
 
 struct watcher_struct {
 	int inotify_fd;
@@ -237,7 +239,7 @@ static int process_args(int argc, char *argv[])
 	num_zero_closers = 1;
 	num_file_creaters = 2;
 	num_inotify_instances = 2;
-
+	mnt_src = working_dir;
 	while (1) {
 		int option_index = 0;
 		static struct option long_options[] = {
@@ -248,10 +250,12 @@ static int process_args(int argc, char *argv[])
 		    {"creaters", required_argument,	0, 'r'},
 		    {"instances", required_argument,	0, 'i'},
 		    {"dir", required_argument,		0, 't'},
+		    {"source_mnt", required_argument,	0, 's'},
+		    {"fstype", required_argument,	0, 'f'},
 		    {0,		0,			0,  0 }
 		};
 
-		c = getopt_long(argc, argv, "c:d:m:z:r:i:t:", long_options, &option_index);
+		c = getopt_long(argc, argv, "c:d:m:z:r:i:t:s:f:", long_options, &option_index);
 		if (c == -1)
 			break;
 
@@ -276,6 +280,12 @@ static int process_args(int argc, char *argv[])
 			break;
 		case 't':
 			working_dir = optarg;
+			break;
+		case 's':
+			mnt_src = optarg;
+			break;
+		case 'f':
+			fstype = optarg;
 			break;
 		default:
 			printf("?? unknown option 0%o ??\n", c);
