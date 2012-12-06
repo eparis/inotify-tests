@@ -1,0 +1,11 @@
+*.c~
+cscope.*
+
+inotify-oneshot
+inotify-unlink
+inotify_4096
+inotify_tester
+open
+syscall_thrash
+testfile1
+testfile2
