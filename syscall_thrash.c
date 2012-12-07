@@ -523,13 +523,13 @@ static int process_args(int argc, char *argv[])
 int main(int argc, char *argv[])
 {
 	struct thread_data *td;
-	int iret;
+	int rc;
 	void *ret;
 	unsigned int i;
 	struct sigaction setmask;
 
-	iret = process_args(argc, argv);
-	if (iret)
+	rc = process_args(argc, argv);
+	if (rc)
 		handle_error("processing arguments");
 
 	/* close cleanly on cntl+c */
@@ -542,11 +542,11 @@ int main(int argc, char *argv[])
 	mkdir(working_dir, S_IRWXU);
 
 	/* set up a pthread attr with a tiny stack */
-	iret = pthread_attr_init(&attr);
-	if (iret)
+	rc = pthread_attr_init(&attr);
+	if (rc)
 		handle_error("pthread_attr_init");
-	iret = pthread_attr_setstacksize(&attr, PTHREAD_STACK_MIN*2);
-	if (iret)
+	rc = pthread_attr_setstacksize(&attr, PTHREAD_STACK_MIN*2);
+	if (rc)
 		handle_error("pthread_attr_setstacksize");
 
 	td = calloc(num_inotify_instances, sizeof(*td));
@@ -559,33 +559,33 @@ int main(int argc, char *argv[])
 		if (fd < 0)
 			handle_error("opening inotify_fd");
 
-		iret = start_watch_creation_threads(&td[i]);
-		if (iret)
+		rc = start_watch_creation_threads(&td[i]);
+		if (rc)
 			handle_error("creating watch adding threads");
 
-		iret = start_watch_removal_threads(&td[i]);
-		if (iret)
+		rc = start_watch_removal_threads(&td[i]);
+		if (rc)
 			handle_error("creating watch remover threads");
 
-		iret = start_lownum_watch_removal_threads(&td[i]);
-		if (iret)
+		rc = start_lownum_watch_removal_threads(&td[i]);
+		if (rc)
 			handle_error("creating lownum watch remover threads");
 
-		iret = start_data_dumping_threads(&td[i]);
-		if (iret)
+		rc = start_data_dumping_threads(&td[i]);
+		if (rc)
 			handle_error("creating data dumping threads");
 	}
 
-	iret = start_file_creater_threads();
-	if (iret)
+	rc = start_file_creater_threads();
+	if (rc)
 		handle_error("creating file creation/rm threads");
 
-	iret = start_reset_low_wd_thread();
-	if (iret)
+	rc = start_reset_low_wd_thread();
+	if (rc)
 		handle_error("starting thread to reset the low_wd");
 
-	iret = start_mount_fs_thread();
-	if (iret)
+	rc = start_mount_fs_thread();
+	if (rc)
 		handle_error("starting mounting thread");
 
 	/* join the per inotify instance threads */
