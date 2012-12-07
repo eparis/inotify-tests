@@ -206,7 +206,7 @@ static int start_data_dumping_threads(struct thread_data *td)
 
 	/* use default ATTR for larger stack */
 	for (i = 0; i < num_data_dumpers; i++) {
-		rc = pthread_create( &data_dumpers[i], NULL, __dump_data, &os);
+		rc = pthread_create(&data_dumpers[i], NULL, __dump_data, &os);
 		if (rc)
 			handle_error("creating threads to dump inotify data");
 		WAIT_CHILD;
@@ -262,7 +262,7 @@ static int start_watch_creation_threads(struct thread_data *td)
 	for (i = 0; i < num_watcher_threads; i++) {
 		ws.file_num = i;
 		for (j = 0; j < watcher_multiplier; j++) {
-			rc = pthread_create(&watchers[i * num_watcher_threads + j], &attr, __add_watches, &ws);
+			rc = pthread_create(&watchers[i * watcher_multiplier + j], &attr, __add_watches, &ws);
 			if (rc)
 				handle_error("creating water threads");
 			WAIT_CHILD;
@@ -395,7 +395,7 @@ static int join_threads(struct thread_data *td)
 	to_join = td->watchers;
 	for (i = 0; i < num_watcher_threads; i++)
 		for (j = 0; j < watcher_multiplier; j++)
-			pthread_join(to_join[i * num_watcher_threads + j], &ret);
+			pthread_join(to_join[i * watcher_multiplier + j], &ret);
 
 	to_join = td->removers;
 	for (i = 0; i < num_closer_threads; i++)
@@ -507,8 +507,8 @@ static int process_args(int argc, char *argv[])
 
 	if (num_cores == 0)
 		num_cores = sysconf(_SC_NPROCESSORS_ONLN);
-	if (num_cores < 1)
-		num_cores = 1;
+	//if (num_cores < 1)
+		num_cores = 3;
 	if (num_data_dumpers == 0)
 		num_data_dumpers = num_cores;
 	if (watcher_multiplier == 0)
@@ -518,7 +518,9 @@ static int process_args(int argc, char *argv[])
 	if (num_file_creaters == 0)
 		num_file_creaters = num_cores;
 	if (num_inotify_instances == 0)
-		num_inotify_instances = num_cores;
+		num_inotify_instances = num_cores/4;
+	if (num_inotify_instances == 0)
+		num_inotify_instances = 2;
 	if (mnt_src == NULL)
 		mnt_src = working_dir;
 	if (num_watcher_threads == 0)
@@ -564,23 +566,29 @@ int main(int argc, char *argv[])
 
 	/* create an inotify instance and make it O_NONBLOCK */
 	for (i = 0; i < num_inotify_instances; i++) {
-		int fd = inotify_init1(O_NONBLOCK);
+		struct thread_data *t;
+		int fd;
+
+		fd = inotify_init1(O_NONBLOCK);
 		if (fd < 0)
 			handle_error("opening inotify_fd");
 
-		rc = start_watch_creation_threads(&td[i]);
+		t = &td[i];
+		t->inotify_fd = fd;
+
+		rc = start_watch_creation_threads(t);
 		if (rc)
 			handle_error("creating watch adding threads");
 
-		rc = start_watch_removal_threads(&td[i]);
+		rc = start_watch_removal_threads(t);
 		if (rc)
 			handle_error("creating watch remover threads");
 
-		rc = start_lownum_watch_removal_threads(&td[i]);
+		rc = start_lownum_watch_removal_threads(t);
 		if (rc)
 			handle_error("creating lownum watch remover threads");
 
-		rc = start_data_dumping_threads(&td[i]);
+		rc = start_data_dumping_threads(t);
 		if (rc)
 			handle_error("creating data dumping threads");
 	}
@@ -610,5 +618,13 @@ int main(int argc, char *argv[])
 	/* clean up the tmp dir which should be empty */
 	rmdir(working_dir);
 
+	for (i = 0; i < num_inotify_instances; i++) {
+		free(td[i].watchers);
+		free(td[i].removers);
+		free(td[i].lownum_removers);
+		free(td[i].data_dumpers);
+	}
+	free(td);
+	free(file_creaters);
 	exit(EXIT_SUCCESS);
 }
