@@ -445,13 +445,6 @@ static int process_args(int argc, char *argv[])
 {
 	int c;
 
-	num_cores = 2;
-	num_data_dumpers = 4;
-	watcher_multiplier = 4;
-	num_zero_closers = 1;
-	num_file_creaters = 2;
-	num_inotify_instances = 2;
-	mnt_src = working_dir;
 	while (1) {
 		int option_index = 0;
 		static struct option long_options[] = {
@@ -512,10 +505,26 @@ static int process_args(int argc, char *argv[])
 		printf("\n");
 	}
 
+	if (num_cores == 0)
+		num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+	if (num_cores < 1)
+		num_cores = 1;
+	if (num_data_dumpers == 0)
+		num_data_dumpers = num_cores;
+	if (watcher_multiplier == 0)
+		watcher_multiplier = 2;
+	if (num_zero_closers == 0)
+		num_zero_closers = 1;
+	if (num_file_creaters == 0)
+		num_file_creaters = num_cores;
+	if (num_inotify_instances == 0)
+		num_inotify_instances = num_cores;
+	if (mnt_src == NULL)
+		mnt_src = working_dir;
 	if (num_watcher_threads == 0)
 		num_watcher_threads = num_cores;
 	if (num_closer_threads == 0)
-		num_closer_threads = num_watcher_threads * 2;
+		num_closer_threads = num_watcher_threads * watcher_multiplier;
 
 	return 0;
 }
