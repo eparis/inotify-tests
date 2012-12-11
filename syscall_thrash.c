@@ -9,23 +9,34 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/inotify.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+/* huerristic on how hard to load a box */
 static unsigned int num_cores;
+/* number of threads which just read from inotify_fd and ignore the results */
 static unsigned int num_data_dumpers;
+/* each thread will add a watch to a given file as fast as it can */
+static unsigned int num_adder_threads;
+/* each thread will remove all watches between low and high as fast as they can */
+static unsigned int num_remover_threads;
+/* a multiplier for adders and removers so you have X adders per file */
 static unsigned int watcher_multiplier;
-static unsigned int num_watcher_threads;
-static unsigned int num_closer_threads;
-static unsigned int num_zero_closers;
+/* this removes watches from low_wd to low_wd + 3 just for extra removal races */
+static unsigned int num_low_remover_threads;
+/* create and destroy the files watches are being added to and removed from */
 static unsigned int num_file_creaters;
+/* how many inotify_fd's we have total (so another multiplier for adders and removers) */
 static unsigned int num_inotify_instances;
 
 static char *working_dir = "/tmp/inotify_syscall_thrash";
+/* if mounting a real filesystem, where is the source?  (doesn't matter for tmpfs) */
 static char *mnt_src;
+/* what is the fstype to mount and unmonut? */
 static char *fstype = "tmpfs";
 
 static pthread_attr_t attr;
@@ -47,7 +58,7 @@ static int wait;
 		pthread_mutex_unlock(&wait_mutex); \
 	} while (0);
 
-struct watcher_struct {
+struct adder_struct {
 	int inotify_fd;
 	int file_num;
 };
@@ -58,7 +69,7 @@ struct operator_struct {
 
 struct thread_data {
 	int inotify_fd;
-	pthread_t *watchers;
+	pthread_t *adders;
 	pthread_t *removers;
 	pthread_t *lownum_removers;
 	pthread_t *data_dumpers;
@@ -93,12 +104,12 @@ static void *__create_files(__attribute__ ((unused)) void *ptr)
 	char filename[50];
 	unsigned int i;
 
-	fprintf(stderr, "Starting creater thread\n");
+	fprintf(stdout, "Starting creater thread\n");
 
 	WAKE_PARENT;
 
 	while (!stopped) {
-		for (i = 0; i < num_watcher_threads; i++) {
+		for (i = 0; i < num_adder_threads; i++) {
 			int fd;
 
 			snprintf(filename, 50, "%s/%d", working_dir, i);
@@ -111,7 +122,7 @@ static void *__create_files(__attribute__ ((unused)) void *ptr)
 	}
 
 	/* cleanup all files on exit */
-	for (i = 0; i < num_watcher_threads; i++) {
+	for (i = 0; i < num_adder_threads; i++) {
 		snprintf(filename, 50, "%s/%d", working_dir, i);
 		unlink(filename);
 	}
@@ -138,10 +149,10 @@ static int start_file_creater_threads(void)
 	return 0;
 }
 
-/* Reset the low_wd so closers can be smart */
+/* Reset the low_wd so removers can be smart */
 static void *__reset_low_wd(__attribute__ ((unused)) void *ptr)
 {
-	fprintf(stderr, "Starting low_wd reset thread\n");
+	fprintf(stdout, "Starting low_wd reset thread\n");
 
 	WAKE_PARENT;
 
@@ -175,7 +186,7 @@ static void *__dump_data(void *ptr)
 	int inotify_fd = operator_arg->inotify_fd;
 	int ret;
 
-	fprintf(stderr, "Starting inotify data dumper thread\n");
+	fprintf(stdout, "Starting inotify data dumper thread\n");
 
 	WAKE_PARENT;
 
@@ -217,13 +228,13 @@ static int start_data_dumping_threads(struct thread_data *td)
 /* add a watch to a specific file as fast as we can */
 static void *__add_watches(void *ptr)
 {
-	struct watcher_struct *watcher_arg = ptr;
-	int file_num = watcher_arg->file_num;
-	int notify_fd = watcher_arg->inotify_fd;
+	struct adder_struct *adder_arg = ptr;
+	int file_num = adder_arg->file_num;
+	int notify_fd = adder_arg->inotify_fd;
 	int ret;
 	char filename[50];
 
-	fprintf(stderr, "Creating a watch creater thread, notify_fd=%d filenum=%d\n",
+	fprintf(stdout, "Creating a watch creater thread, notify_fd=%d filenum=%d\n",
 		notify_fd, file_num);
 
 	snprintf(filename, 50, "%s/%d", working_dir, file_num);
@@ -246,23 +257,23 @@ static void *__add_watches(void *ptr)
 
 static int start_watch_creation_threads(struct thread_data *td)
 {
-	struct watcher_struct ws;
+	struct adder_struct ws;
 	unsigned int i, j;
 	int rc;
-	pthread_t *watchers;
+	pthread_t *adders;
 
 	ws.inotify_fd = td->inotify_fd;
 
 	/* allocate the pthread_t's for all of the threads */
-	watchers = calloc(num_watcher_threads * watcher_multiplier, sizeof(*watchers));
-	if (!watchers)
-		handle_error("allocating watchers");
-	td->watchers = watchers;
+	adders = calloc(num_adder_threads * watcher_multiplier, sizeof(*adders));
+	if (!adders)
+		handle_error("allocating adders");
+	td->adders = adders;
 
-	for (i = 0; i < num_watcher_threads; i++) {
+	for (i = 0; i < num_adder_threads; i++) {
 		ws.file_num = i;
 		for (j = 0; j < watcher_multiplier; j++) {
-			rc = pthread_create(&watchers[i * watcher_multiplier + j], &attr, __add_watches, &ws);
+			rc = pthread_create(&adders[i * watcher_multiplier + j], &attr, __add_watches, &ws);
 			if (rc)
 				handle_error("creating water threads");
 			WAIT_CHILD;
@@ -279,7 +290,7 @@ static void *__remove_watches(void *ptr)
 	int inotify_fd = operator_arg->inotify_fd;
 	int i;
 
-	fprintf(stderr, "Starting a thread to remove watches\n");
+	fprintf(stdout, "Starting a thread to remove watches\n");
 
 	WAKE_PARENT;
 
@@ -295,23 +306,26 @@ static int start_watch_removal_threads(struct thread_data *td)
 {
 	struct operator_struct os;
 	int rc;
-	unsigned int i;
+	unsigned int i, j;
 	pthread_t *removers;
 
 	os.inotify_fd = td->inotify_fd;
 
-	removers = calloc(num_closer_threads, sizeof(*removers));
+	/* allocate the pthread_t's for all of the threads */
+	removers = calloc(num_remover_threads * watcher_multiplier, sizeof(*removers));
 	if (!removers)
 		handle_error("allocating removal pthreads");
 
 	td->removers = removers;
 
 	/* create threads which walk from low_wd to high_wd closing all of the wd's in between */
-	for (i = 0; i < num_closer_threads; i++) {
-		rc = pthread_create (&removers[i], &attr, __remove_watches, &os);
-		if (rc)
-			handle_error("creating the removal threads");
-		WAIT_CHILD;
+	for (i = 0; i < num_remover_threads; i++) {
+		for (j = 0; j < watcher_multiplier; j++) {
+			rc = pthread_create(&removers[i * watcher_multiplier + j], &attr, __remove_watches, &os);
+			if (rc)
+				handle_error("creating the removal threads");
+			WAIT_CHILD;
+		}
 	}
 	return 0;
 }
@@ -322,6 +336,8 @@ static void *__remove_lownum_watches(void *ptr)
 	struct operator_struct *operator_arg = ptr;
 	int inotify_fd = operator_arg->inotify_fd;
 	int i;
+
+	fprintf(stdout, "Starting thread to remove low watches\n");
 
 	WAKE_PARENT;
 
@@ -342,14 +358,14 @@ static int start_lownum_watch_removal_threads(struct thread_data *td)
 
 	od.inotify_fd = td->inotify_fd;
 
-	lownum_removers = calloc(num_zero_closers, sizeof(*lownum_removers));
+	lownum_removers = calloc(num_low_remover_threads, sizeof(*lownum_removers));
 	if (!lownum_removers)
 		handle_error("allocating lownum removal pthreads");
 
 	td->lownum_removers = lownum_removers;
 
 	/* create threads which walk from low_wd to high_wd closing all of the wd's in between */
-	for (i = 0; i < num_zero_closers; i++) {
+	for (i = 0; i < num_low_remover_threads; i++) {
 		rc = pthread_create (&lownum_removers[i], &attr, __remove_lownum_watches, &od);
 		if (rc)
 			handle_error("creating the lownum removal threads");
@@ -361,14 +377,18 @@ static int start_lownum_watch_removal_threads(struct thread_data *td)
 static void *__mount_fs(__attribute__ ((unused)) void *ptr)
 {
 	int rc;
+ 
+	fprintf(stdout, "Starting mount and unmount fs on top of working dir\n");
 
 	WAKE_PARENT;
 
 	while (!stopped) {
-		rc = mount(working_dir, working_dir, "tmpfs", MS_MGC_VAL, "rootcontext=\"unconfined_u:object_r:tmp_t:s0\"");
+		rc = mount(mnt_src, working_dir, fstype, MS_MGC_VAL, "rootcontext=\"unconfined_u:object_r:tmp_t:s0\"");
 		usleep(100000);
 		if (!rc)
 			umount2(working_dir, MNT_DETACH);
+		else
+			fprintf(stderr, "Failed to mount %s: %s\n", mnt_src, strerror(errno));
 		usleep(100000);
 	}
 	return NULL;
@@ -392,17 +412,18 @@ static int join_threads(struct thread_data *td)
 	void *ret;
 	pthread_t *to_join;
 
-	to_join = td->watchers;
-	for (i = 0; i < num_watcher_threads; i++)
+	to_join = td->adders;
+	for (i = 0; i < num_adder_threads; i++)
 		for (j = 0; j < watcher_multiplier; j++)
 			pthread_join(to_join[i * watcher_multiplier + j], &ret);
 
 	to_join = td->removers;
-	for (i = 0; i < num_closer_threads; i++)
-		pthread_join(to_join[i], &ret);
+	for (i = 0; i < num_remover_threads; i++)
+		for (j = 0; j < watcher_multiplier; j++)
+			pthread_join(to_join[i * watcher_multiplier + j], &ret);
 
 	to_join = td->lownum_removers;
-	for (i = 0; i < num_zero_closers; i++)
+	for (i = 0; i < num_low_remover_threads; i++)
 		pthread_join(to_join[i], &ret);
 
 	to_join = td->data_dumpers;
@@ -451,8 +472,8 @@ static int process_args(int argc, char *argv[])
 		    {"cores",	required_argument,	0, 'c'},
 		    {"data",	required_argument,	0, 'd'},
 		    {"multiplier", required_argument,	0, 'm'},
-		    {"zero",	required_argument,	0, 'z'},
-		    {"creaters", required_argument,	0, 'r'},
+		    {"low",	required_argument,	0, 'l'},
+		    {"adders", required_argument,	0, 'a'},
 		    {"instances", required_argument,	0, 'i'},
 		    {"dir", required_argument,		0, 't'},
 		    {"source_mnt", required_argument,	0, 's'},
@@ -469,16 +490,16 @@ static int process_args(int argc, char *argv[])
 			str_to_uint(&num_cores, optarg);
 			break;
 		case 'd':
-			str_to_uint(&num_cores, optarg);
+			str_to_uint(&num_data_dumpers, optarg);
 			break;
 		case 'm':
-			str_to_uint(&num_cores, optarg);
+			str_to_uint(&watcher_multiplier, optarg);
 			break;
-		case 'z':
-			str_to_uint(&num_cores, optarg);
+		case 'l':
+			str_to_uint(&num_low_remover_threads, optarg);
 			break;
-		case 'r':
-			str_to_uint(&num_cores, optarg);
+		case 'a':
+			str_to_uint(&num_adder_threads, optarg);
 			break;
 		case 'i':
 			str_to_uint(&num_cores, optarg);
@@ -507,26 +528,33 @@ static int process_args(int argc, char *argv[])
 
 	if (num_cores == 0)
 		num_cores = sysconf(_SC_NPROCESSORS_ONLN);
-	//if (num_cores < 1)
-		num_cores = 3;
+	if (num_cores < 1)
+		num_cores = 1;
+	num_cores++;
+
 	if (num_data_dumpers == 0)
-		num_data_dumpers = num_cores;
+		num_data_dumpers = 1;
+
 	if (watcher_multiplier == 0)
 		watcher_multiplier = 2;
-	if (num_zero_closers == 0)
-		num_zero_closers = 1;
+
+	if (num_low_remover_threads == 0)
+		num_low_remover_threads = 1;
+
 	if (num_file_creaters == 0)
-		num_file_creaters = num_cores;
+		num_file_creaters = num_cores/2;
+
 	if (num_inotify_instances == 0)
-		num_inotify_instances = num_cores/4;
-	if (num_inotify_instances == 0)
-		num_inotify_instances = 2;
+		num_inotify_instances = num_cores/2;
+
 	if (mnt_src == NULL)
 		mnt_src = working_dir;
-	if (num_watcher_threads == 0)
-		num_watcher_threads = num_cores;
-	if (num_closer_threads == 0)
-		num_closer_threads = num_watcher_threads * watcher_multiplier;
+
+	if (num_adder_threads == 0)
+		num_adder_threads = 3;
+
+	if (num_remover_threads == 0)
+		num_remover_threads = num_adder_threads;
 
 	return 0;
 }
@@ -619,7 +647,7 @@ int main(int argc, char *argv[])
 	rmdir(working_dir);
 
 	for (i = 0; i < num_inotify_instances; i++) {
-		free(td[i].watchers);
+		free(td[i].adders);
 		free(td[i].removers);
 		free(td[i].lownum_removers);
 		free(td[i].data_dumpers);
