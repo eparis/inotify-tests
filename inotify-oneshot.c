@@ -25,7 +25,7 @@ int makeFile (const char* filename) {
     return 0;
 }
 
-int main (int argc, char* argv[]) {
+int main (int argc __attribute__((unused)), char* argv[] __attribute__((unused))) {
     const char filename[] = "/tmp/inotify_oneshot_test.test";
     struct inotify_event event;
     int notifyFD, wd, ret, i;
@@ -45,8 +45,9 @@ int main (int argc, char* argv[]) {
     }
 
     for (i = 0 ; ; i++) {
-        struct pollfd pollfd = {0, };
+        struct pollfd pollfd;
         
+	memset(&pollfd, 0, sizeof(pollfd));
         pollfd.fd = notifyFD;
         pollfd.events = POLLIN;
         
